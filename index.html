@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VoltRescue — start here</title>
+    <style>
+      body { font-family: "Segoe UI", sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; line-height: 1.6; }
+      code { background: #eee; padding: 0.1em 0.35em; border-radius: 4px; }
+      a { font-size: 1.1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>VoltRescue</h1>
+    <p>
+      This file is only a signpost. The application is served by the API host, not from disk.
+    </p>
+    <ol>
+      <li>Run <code>start.ps1</code> (right-click, Run with PowerShell).</li>
+      <li>The console prints the address. Open it.</li>
+    </ol>
+    <p>Default address: <a href="http://127.0.0.1:8815/">http://127.0.0.1:8815/</a></p>
+    <p>
+      The port is set by <code>APP_PORT</code> in <code>.env</code>. If Windows still holds a
+      prefix after a hard kill, change <code>APP_PORT</code> and restart — that is the only
+      place the port needs to change.
+    </p>
+  </body>
+</html>

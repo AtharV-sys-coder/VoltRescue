@@ -1,0 +1,7 @@
+runtime/
+data/*.sqlite
+data/*.sqlite-journal
+uploads/*
+!uploads/.gitkeep
+.env
+*.log
