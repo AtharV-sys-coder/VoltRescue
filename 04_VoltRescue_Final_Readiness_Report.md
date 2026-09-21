@@ -4,7 +4,7 @@
 **Assessment date:** 9 September 2026
 **Assessed build:** `server.ps1` (842 lines), SQLite store, SPA frontend
 **Application address:** `http://127.0.0.1:8815/` (set by `APP_PORT` in `.env`)
-**Verification basis:** 168 automated assertions executed against the running system, plus a manual browser pass across all four roles
+**Verification basis:** 170 automated assertions executed against the running system, plus a manual browser pass across all four roles
 
 ---
 
@@ -126,11 +126,13 @@ The following were explicitly out of scope and are **not** implemented. Architec
 | D-2 | SQL built by string concatenation with manual quoting | Correct today because `Q` is applied consistently, but one missed call is an injection. Parameter binding is the fix |
 | D-3 | Salted SHA-256 in an envelope labelled `pbkdf2:` | The label is misleading and the scheme is too fast. Must become bcrypt or Argon2id |
 | D-4 | `Init-Db` resets demo passwords on every start | Convenient for a demo, unacceptable anywhere else |
-| D-5 | Login form pre-filled with admin credentials | Demo affordance; remove before any shared deployment |
+| D-5 | Sign-in screen offers one-click demonstration logins | Replaced the hard-coded admin credentials, which was worse. Still a demo affordance: remove the `DEMO_ACCOUNTS` block before any shared deployment |
 | D-6 | `runtime/php/` — 119 MB, 84 files, cannot execute | Dead weight. Safe to delete; kept only because it was deliberately downloaded and can be re-fetched |
 | D-7 | 500 responses echo the exception message | Useful now, information disclosure later |
 | **Cleared** | Root `app.js` and `style.css` duplicated the live frontend | **Deleted.** Nothing referenced them |
 | **Cleared** | Port hard-coded in five files | **Resolved.** `APP_PORT` in `.env` drives everything, and `POST /admin/shutdown` stops the port leaking |
+| **Cleared** | Frontend injected stored user text straight into `innerHTML` | **Resolved.** An address or remark containing markup executed in the browser of anyone who viewed it, including administrators. All interpolated values now pass through an `esc()` helper |
+| **Cleared** | The request form depended on a map library loaded from a public CDN | **Resolved.** With no internet the missing `L` global threw and took out the whole screen. It now falls back to manual coordinate entry |
 
 ---
 
@@ -142,7 +144,7 @@ The following were explicitly out of scope and are **not** implemented. Architec
 |---|---:|---:|---:|
 | `tests/unit.ps1` | 42 | 42 | 0 |
 | `tests/run.ps1` | 126 | 126 | 0 |
-| **Total** | **168** | **168** | **0** |
+| **Total** | **170** | **170** | **0** |
 
 The API suite runs in eleven labelled phases: smoke and authentication, input validation, role-based access control, the happy-path lifecycle, uploads and ownership, failure paths and recovery, transition rules, the notification framework, admin oversight and reporting, integration connectors, and database persistence.
 
@@ -158,6 +160,10 @@ The API suite runs in eleven labelled phases: smoke and authentication, input va
 | CSV export corrupted by commas in data | Medium | Fields were concatenated unquoted | RFC 4180 quoting via `Csv-Cell` |
 | No retry, queue or live send in the running host | High | The framework existed only in the unused PHP reference | Fully implemented in `server.ps1` |
 | A recycler could not refuse a load at the gate | Medium | `RECYCLER_REJECTED` was only reachable after formal receipt | Added `IN_TRANSIT_TO_RECYCLER → RECYCLER_REJECTED`; diagrams updated |
+| Stored user text was injected into the DOM unescaped | **Security** | Addresses, remarks and notes were interpolated into `innerHTML` verbatim. A resident could store markup that executed in the administrator's browser — the lowest-trust input reaching the highest-privilege session | All interpolated values pass through an `esc()` helper. Verified with a payload that now renders as inert text |
+| The pickup form died without internet | **High for the demonstration** | Leaflet loads from a public CDN. When it was unreachable the missing `L` global threw and the entire request screen failed to render | Falls back to manual coordinate entry with a sensible default; GPS capture still works |
+| A failed call left screens on "Loading…" forever | Medium | No view or action handler caught errors, so any failure was silent apart from a console message | Central `handleError`, busy-state buttons that cannot double-submit, and a 401 that returns cleanly to sign-in |
+| An RBAC test misreported a lookup failure as a security breach | Medium (test quality) | The test resolved a collector by array position against an unordered `SELECT`. When that yielded nothing the id became `0`, so every row appeared to violate scoping — alarming and wrong | Collectors are resolved by the identity that owns them, and the id is asserted non-zero. Confirmed stable over repeated runs; the endpoint itself was never at fault |
 
 ### 4.3 Data integrity confirmed directly against the database
 
@@ -207,7 +213,7 @@ Row counts were checked in SQLite independently of the API: twelve `status_histo
 | Scalability | **Not ready** | Single-threaded, process-per-query, file-based database |
 | Observability | **Partial** | Strong audit trail and notification statistics; no metrics, no structured logs, no alerting |
 | Operational resilience | **Partial** | Graceful shutdown and retry queue exist; no supervision, no automatic restart, no backup schedule |
-| Test coverage | **Good** | 168 assertions across unit and integration; no UI or load coverage |
+| Test coverage | **Good** | 170 assertions across unit and integration; no UI or load coverage |
 | Documentation | **Ready** | Four documents covering process, end-user, technical and readiness |
 
 ### Verdict

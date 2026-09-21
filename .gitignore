@@ -5,3 +5,7 @@ uploads/*
 !uploads/.gitkeep
 .env
 *.log
+share-url.txt
+share-keeper.log
+tools/cloudflared.exe
+tools/ngrok.exe

@@ -140,7 +140,7 @@ Most demos only show the happy path. Showing the failure path is what makes an o
 
 ### Close — 60 seconds
 
-> "That is the full custody chain, working, with the data persisted and audited. Phase 1 is 97% complete against the scope we agreed. The remaining 3% is honest: no message has yet reached a real phone, because we have no Africa's Talking account. Everything else on the list is done and covered by 168 automated tests.
+> "That is the full custody chain, working, with the data persisted and audited. Phase 1 is 97% complete against the scope we agreed. The remaining 3% is honest: no message has yet reached a real phone, because we have no Africa's Talking account. Everything else on the list is done and covered by 170 automated tests.
 >
 > What I need from Phase 2 is the hardening work — a production-grade host, real credentials, and a security pass — before this touches real residents."
 
@@ -191,7 +191,7 @@ If you remember nothing else, remember these.
 | User roles         | **4**                                                |
 | Lifecycle statuses | **17** — 12 success stages, 5 failure states         |
 | Audit action types | **16**                                               |
-| Automated tests    | **168** — 42 unit, 126 integration — **all passing** |
+| Automated tests    | **170** — 42 unit, 128 integration — **all passing** |
 | Phase 1 completion | **97%**                                              |
 | Backend size       | ~842 lines                                           |
 | Documentation      | 5 documents                                          |
@@ -229,19 +229,23 @@ Five failure states: **Cancelled · Rejected · No-show · Transfer failed · Re
 
 Know these so you never hunt for a record while sharing your screen.
 
+**Request numbers are assigned by the database, so they change every time the demo data is reloaded.** Do not memorise them from this page. `demo-prep.ps1` prints the current ones at the end of its run, and writes the same list to **`demo-cheatsheet.txt`** in the project folder. Keep that file open on a second screen, or print it.
 
-| Need                                                  | Request                             | Where                                                                                                            |
-| ----------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **A completed request with a full 12-stage timeline** | **#19 — Msimbazi Street, Kariakoo** | Amina Hassan (the citizen login). Has 12 timeline entries. Its comma also proves the CSV export quotes correctly |
-| A second completed one                                | #24 — Upanga West, Ilala            | Amina Hassan, also 12 stages                                                                                     |
-| **The no-show, for Act 6**                            | **#25 — Kigamboni Ferry, Temeke**   | Visible on the admin dashboard                                                                                   |
-| A load sitting with the recycler                      | #35 — Ilala Boma, Ilala             | Recycler login sees this waiting to validate                                                                     |
-| A load in transit                                     | #34 — Kinondoni Shamba              | Amina Hassan owns it — good for showing a citizen tracking a live job                                            |
-| A collector currently en route                        | #32 — Ubungo Maziwa                 | Juma Mwangi                                                                                                      |
-| Awaiting assignment                                   | #26, #27, #28                       | The admin queue you assign from                                                                                  |
+It looks like this, and names the record you need for each moment in the script:
 
+```
+  Completed, full 12-stage timeline : #136 - Msimbazi Street, Kariakoo
+  Second completed example          : #138 - Uhuru Street, Ilala
+  The no-show (exception path)      : #142 - Kigamboni Ferry, Temeke
+  Sitting with the recycler         : #152 - Ilala Boma, Ilala
+  In transit to the recycler        : #151 - Kinondoni Shamba, Kinondoni
+  Collector currently en route      : #149 - Ubungo Maziwa, Ubungo
+  Awaiting assignment (assign this) : #143 - Tandale Market, Kinondoni
+```
 
-**Amina Hassan** (your citizen login) owns four requests: #19 and #24 completed, #29 assigned, #34 in transit. That gives you both a finished journey and a live one from the same account.
+Two things stay true no matter what the numbers are:
+
+**Amina Hassan**, the citizen login, always owns both a completed journey and a live one, so you can demonstrate tracking either way from a single account. And the completed Kariakoo request always contains a comma in its address, which is what makes the CSV export a genuine test of correct quoting rather than a formality.
 
 Searching **"Kariakoo"** on the admin dashboard returns 2 rows. The dashboard shows 10 rows per page: page 1 is the live caseload, page 2 is completed history.
 
@@ -327,7 +331,7 @@ These are ordered by how likely a COO is to ask them. The answers are written to
 
 **Q15 — "Show me it is actually tested, not just working on your screen."**
 
-> Run the test suite live. *"One hundred and sixty-eight automated checks. Forty-two test the logic in isolation, one hundred and twenty-six drive the real system over HTTP and then verify the database directly — so they cannot be fooled by an interface that looks right."*
+> Run the test suite live. *"One hundred and seventy automated checks. Forty-two test the logic in isolation, one hundred and twenty-eight drive the real system over HTTP and then verify the database directly — so they cannot be fooled by an interface that looks right."*
 >
 > Then add the honest part: *"Worth telling you that this suite found three serious bugs in what I previously believed was a finished build, including one where any list of more than one row was silently truncating. That is exactly why the tests exist."*
 
@@ -377,7 +381,7 @@ Different audience, different concerns — academic rigour rather than operation
 | What is the architecture?                  | Three tiers: a single-page browser client, a REST API, and a relational store. The lifecycle engine sits in the API layer so no client can bypass it |
 | Why SQLite?                                | Zero-configuration for a proof of concept. The schema is standard SQL and migrates to PostgreSQL without redesign                                    |
 | How is authorisation enforced?             | Two layers: role checks on every route, and ownership scoping pushed into the SQL so an unauthorised row is never even selected                      |
-| How did you validate correctness?          | 168 automated assertions, plus direct database verification independent of the API                                                                   |
+| How did you validate correctness?          | 170 automated assertions, plus direct database verification independent of the API                                                                   |
 | What is your evidence the design is sound? | The failure paths work as designed — no-show, gate rejection, and recovery — which is where weak designs break                                       |
 | What would you research next?              | Offline-first synchronisation for low-connectivity field operations. It is the gap between this working in a demo and working in Dar es Salaam       |
 
@@ -435,7 +439,7 @@ Read this in the morning. Calm recovery in front of an operator is itself a demo
 
 > "Let me come back to that — I would rather show you the custody chain end to end than lose the thread here."
 
-Then carry on. You know the system works; 168 passing tests say so.
+Then carry on. You know the system works; 170 passing tests say so.
 
 ---
 
@@ -447,7 +451,7 @@ If the meeting is running short and you only get thirty seconds:
 
 > "Phase 1 gives you a working, audited chain of custody from a resident's doorstep to a licensed recycler, with every handover timestamped and attributable.
 >
-> It is 97% complete against the agreed scope, verified by 168 automated tests, and I have been explicit in the documentation about the 3% that is not done.
+> It is 97% complete against the agreed scope, verified by 170 automated tests, and I have been explicit in the documentation about the 3% that is not done.
 >
 > The next step is six to eight weeks of hardening — and one Africa's Talking account, which is the cheapest way to close the biggest remaining risk."
 

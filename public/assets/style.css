@@ -101,6 +101,37 @@ form.stack { display: grid; gap: 12px; }
 /* The leading edge pulses so the current stage is obvious at a glance. */
 .progress span.on:last-of-type { box-shadow: 0 0 0 0 rgba(62, 224, 160, 0.6); animation: fillIn 320ms ease both, edgePulse 2.2s ease-in-out 600ms infinite; }
 
+/* A job that ended badly stops dead: amber track, no pulse, and a reason. */
+.progress.failed span.on { background: var(--warn); }
+.progress.failed span.on:last-of-type { box-shadow: none; animation: fillIn 320ms ease both; }
+.stopped { margin: -8px 0 12px; font-size: 0.78rem; color: var(--bad); }
+.card.is-failed { border-color: rgba(255, 107, 122, 0.45); }
+.status.bad { color: var(--bad); }
+.dot.bad { background: var(--bad); }
+.kpi.warn strong { color: var(--warn); }
+
+/* Notification list */
+.alerts { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
+.alerts li { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel2); }
+.pill { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 1px 8px; }
+
+/* One-click role switching on the sign-in screen, for pilot demonstrations. */
+.demo-accounts { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.chip {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 99px; padding: 6px 14px; font-size: 0.8rem; cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Shown when Leaflet or its tiles cannot be reached. */
+.map-fallback {
+  display: grid; gap: 10px; padding: 16px; border: 1px dashed var(--line);
+  border-radius: var(--radius); background: var(--panel2); color: var(--muted); font-size: 0.85rem;
+}
+.map-fallback p { margin: 0; }
+
 @keyframes fillIn { from { transform: scaleX(0.2); opacity: 0.3; } to { transform: scaleX(1); opacity: 1; } }
 @keyframes edgePulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(62, 224, 160, 0.5); } 50% { box-shadow: 0 0 0 5px rgba(62, 224, 160, 0); } }
 @keyframes riseIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

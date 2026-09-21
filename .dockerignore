@@ -1,0 +1,10 @@
+.git
+.env
+data
+uploads
+tools
+*.pdf
+*.log
+share-url.txt
+share-keeper.log
+demo-cheatsheet.txt

@@ -1,7 +1,10 @@
 # VoltRescue POC API + static server (SQLite via tools\sqlite3.exe)
 # Windows Application Control blocks unsigned PHP; this host is the runnable POC.
 # -LibraryOnly loads the functions without binding a port, so unit tests can dot-source this file.
-param([switch]$LibraryOnly)
+# -Lan additionally answers on the machine's network address so another device can
+# reach the POC. It is deliberately opt-in: the default stays loopback-only,
+# because this build has no HTTPS and sends credentials in clear text.
+param([switch]$LibraryOnly, [switch]$Lan)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Sqlite = Join-Path $Root "tools\sqlite3.exe"
@@ -27,7 +30,14 @@ $JwtSecret = $(if ($EnvMap['JWT_SECRET']) { $EnvMap['JWT_SECRET'] } else { 'volt
 $JwtTtl = 28800
 # Single source of truth for the listen port. Windows HTTP.sys can keep a prefix
 # reserved after a hard kill, so this must be changeable in exactly one place.
-$Port = $(if ($EnvMap['APP_PORT']) { [int]$EnvMap['APP_PORT'] } else { 8811 })
+$Port = $(
+  if ($env:PORT) { [int]$env:PORT }
+  elseif ($EnvMap['APP_PORT']) { [int]$EnvMap['APP_PORT'] }
+  else { 8811 }
+)
+# Linux containers (Fly.io) ship sqlite3 on PATH; Windows POC uses the bundled exe.
+$sqliteCmd = Get-Command sqlite3 -ErrorAction SilentlyContinue
+$Sqlite = if ($sqliteCmd) { $sqliteCmd.Source } else { Join-Path $Root "tools\sqlite3.exe" }
 
 function Now-Iso { [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') }
 function Q([string]$s) { if ($null -eq $s) { '' } else { $s.Replace("'", "''") } }
@@ -144,7 +154,7 @@ $script:Allowed = @{
 }
 
 function Init-Db {
-  if (-not (Test-Path $Sqlite)) { throw "sqlite3.exe missing at $Sqlite" }
+  if (-not (Test-Path $Sqlite)) { throw "sqlite3 missing at $Sqlite" }
   $schemaFwd = (Join-Path $Root "api\schema.sql").Replace('\','/')
   & $Sqlite $Db ".read $schemaFwd" | Out-Null
   $n = Invoke-Scalar "SELECT COUNT(*) FROM users;"
@@ -419,15 +429,40 @@ if ($LibraryOnly) { return }
 Init-Db
 
 $listener = New-Object Net.HttpListener
-$listener.Prefixes.Add("http://127.0.0.1:$Port/")
+# HTTP.sys matches on the Host header, not the socket, so a prefix bound only to
+# 127.0.0.1 answers 400 to a browser that asked for localhost - and 'localhost'
+# resolves to ::1 first on this machine. Bind all three spellings of loopback so
+# whichever form gets typed or pasted reaches the app. Extra prefixes are
+# best-effort: losing one must not stop the server coming up.
+# Fly.io and other hosts set PORT and send traffic to 0.0.0.0 - loopback-only
+# would make the public hostname fail even though the process is running.
+$bound = @()
+$wanted = @("http://127.0.0.1:$Port/", "http://localhost:$Port/", "http://[::1]:$Port/")
+$publicBind = $Lan -or $env:PORT -or $env:FLY_APP_NAME
+if ($publicBind) {
+  $wanted = @("http://+:$Port/", "http://*:$Port/", "http://0.0.0.0:$Port/") + $wanted
+}
+foreach ($prefix in $wanted) {
+  try { $listener.Prefixes.Add($prefix); $bound += $prefix } catch { }
+}
 try {
   $listener.Start()
 } catch {
-  Write-Host "Cannot bind port $Port. Windows may still hold the prefix (netstat shows PID 4)."
-  Write-Host "Set APP_PORT to a free port in .env and start again."
-  throw
+  # Retry on loopback alone: the extra spellings need a urlacl on some machines.
+  Write-Host "Could not bind all loopback names; falling back to 127.0.0.1 only."
+  $listener = New-Object Net.HttpListener
+  $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+  $bound = @("http://127.0.0.1:$Port/")
+  try {
+    $listener.Start()
+  } catch {
+    Write-Host "Cannot bind port $Port. Windows may still hold the prefix (netstat shows PID 4)."
+    Write-Host "Set APP_PORT to a free port in .env and start again."
+    throw
+  }
 }
 Write-Host "VoltRescue POC  http://127.0.0.1:$Port/"
+if ($bound.Count -gt 1) { Write-Host "Also reachable  $($bound[1..($bound.Count-1)] -join '  ')" }
 Write-Host 'Demo: admin@voltrescue.local / VoltRescue!23'
 
 while ($listener.IsListening) {

@@ -20,6 +20,58 @@ const COLLECTOR_NEXT = {
   PICKUP_COMPLETED: "IN_COLLECTOR_CUSTODY",
 };
 
+const FAILURE_STATES = ["CANCELLED", "REJECTED", "NO_SHOW", "TRANSFER_FAILED", "RECYCLER_REJECTED"];
+
+// The database stores machine codes; people should not have to read them.
+const STATUS_LABEL = {
+  REQUEST_SUBMITTED: "Request submitted",
+  PENDING_ASSIGNMENT: "Awaiting assignment",
+  COLLECTOR_ASSIGNED: "Collector assigned",
+  PICKUP_ACCEPTED: "Pickup accepted",
+  COLLECTOR_EN_ROUTE: "Collector en route",
+  PICKUP_COMPLETED: "Collected",
+  IN_COLLECTOR_CUSTODY: "In collector custody",
+  TRANSFER_SCHEDULED: "Transfer scheduled",
+  IN_TRANSIT_TO_RECYCLER: "In transit to recycler",
+  RECEIVED_BY_RECYCLER: "Received by recycler",
+  RECYCLER_VALIDATED: "Materials validated",
+  PROCESS_COMPLETED: "Recycling completed",
+  CANCELLED: "Cancelled",
+  REJECTED: "Rejected",
+  NO_SHOW: "No-show",
+  TRANSFER_FAILED: "Transfer failed",
+  RECYCLER_REJECTED: "Rejected by recycler",
+};
+
+const BATTERY_TYPES = [
+  "Lead-acid (automotive)",
+  "Lithium-ion",
+  "Motorcycle / Bajaji",
+  "UPS / Inverter",
+  "Solar storage",
+  "Mixed household",
+];
+
+const DEMO_ACCOUNTS = [
+  { role: "Citizen", email: "citizen@voltrescue.local" },
+  { role: "Collector", email: "collector@voltrescue.local" },
+  { role: "Recycler", email: "recycler@voltrescue.local" },
+  { role: "Admin", email: "admin@voltrescue.local" },
+];
+
+function label(status) {
+  return STATUS_LABEL[status] || status;
+}
+
+// Everything interpolated into innerHTML must pass through here. Addresses and
+// remarks are free text typed by residents and would otherwise execute.
+function esc(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
 let token = sessionStorage.getItem("vr_token") || "";
 let me = null;
 let view = "home";
@@ -41,22 +93,91 @@ async function api(path, opts = {}) {
   if (opts.body && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch("/api" + path, { ...opts, headers });
+  let res;
+  try {
+    res = await fetch("/api" + path, { ...opts, headers });
+  } catch {
+    const offline = new Error("Cannot reach the server. Check that it is still running.");
+    offline.status = 0;
+    throw offline;
+  }
   const text = await res.text();
   let data;
   try {
     data = JSON.parse(text);
   } catch {
-    if (!res.ok) throw new Error(text || res.statusText);
+    if (!res.ok) {
+      const e = new Error(text || res.statusText);
+      e.status = res.status;
+      throw e;
+    }
     return text;
   }
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    const e = new Error(data.error || res.statusText);
+    e.status = res.status;
+    e.allowed = data.allowed;
+    throw e;
+  }
   return data;
 }
 
-function progressHtml(status) {
-  const i = FLOW.indexOf(status);
-  return `<div class="progress" aria-label="lifecycle">${FLOW.map((s, n) => `<span class="${n <= i ? "on" : ""}" title="${s}"></span>`).join("")}</div>`;
+// A failed call must never leave a screen sitting on "Loading...". Every view
+// and every action routes its errors through here.
+function handleError(err, targetId) {
+  const message = err?.message || "Something went wrong.";
+  if (err?.status === 401) {
+    token = "";
+    me = null;
+    sessionStorage.removeItem("vr_token");
+    renderAuth();
+    toast("Your session expired. Please sign in again.");
+    return;
+  }
+  if (err?.status === 409 && Array.isArray(err.allowed) && err.allowed.length) {
+    toast(`Not allowed from this stage. Next: ${err.allowed.map(label).join(", ")}`);
+  } else {
+    toast(message);
+  }
+  const el = targetId ? document.getElementById(targetId) : null;
+  if (el) {
+    el.className = "error";
+    el.textContent = message;
+  }
+}
+
+// Disables the button while its action runs, so a double click cannot create
+// two pickups or fire two status changes.
+async function withBusy(btn, working, fn) {
+  if (!btn || btn.disabled) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = working;
+  try {
+    await fn();
+  } catch (err) {
+    handleError(err);
+  } finally {
+    if (btn.isConnected) {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+}
+
+function progressHtml(status, timeline) {
+  const failed = FAILURE_STATES.includes(status);
+  let reached = FLOW.indexOf(status);
+  // A failure code is not on the success track, so work out how far the job
+  // actually got from its history when we have it.
+  if (failed && Array.isArray(timeline)) {
+    reached = timeline.reduce((max, h) => Math.max(max, FLOW.indexOf(h.new_status)), -1);
+  }
+  const segments = FLOW.map(
+    (s, n) => `<span class="${n <= reached ? "on" : ""}" title="${esc(label(s))}"></span>`
+  ).join("");
+  return `<div class="progress${failed ? " failed" : ""}" role="img" aria-label="Progress: ${esc(label(status))}">${segments}</div>
+    ${failed ? `<p class="stopped">Stopped — ${esc(label(status))}</p>` : ""}`;
 }
 
 function layout(body) {
@@ -127,20 +248,39 @@ function renderAuth(mode = "login") {
                  <button class="btn primary" type="submit">Send reset code</button>
                  <label>Code <input name="token"></label>
                  <label>New password <input name="password" type="password" minlength="8"></label>`
-              : `<label>Email or phone <input name="identifier" required value="admin@voltrescue.local"></label>
-                 <label>Password <input name="password" type="password" required value="VoltRescue!23"></label>`
+              : `<label>Email or phone <input name="identifier" required autocomplete="username" placeholder="you@example.com or 2557XXXXXXXX"></label>
+                 <label>Password <input name="password" type="password" required autocomplete="current-password"></label>`
         }
         ${mode !== "reset" ? `<button class="btn primary" type="submit">${mode === "register" ? "Create account" : "Log in"}</button>` : `<button class="btn" type="button" id="confirmReset">Confirm new password</button>`}
-        <p class="muted" id="authMsg">Demo: citizen@ / collector@ / recycler@ / admin@voltrescue.local · VoltRescue!23</p>
+        <p class="muted" id="authMsg"></p>
       </form>
+      ${mode === "login" ? `<div class="demo-accounts">
+        <p class="muted">Pilot demonstration accounts — one click to switch role</p>
+        <div class="chips">
+          ${DEMO_ACCOUNTS.map((a) => `<button type="button" class="chip" data-demo="${esc(a.email)}">${esc(a.role)}</button>`).join("")}
+        </div>
+      </div>` : ""}
     </section>`;
   document.getElementById("tabLogin").onclick = () => renderAuth("login");
   document.getElementById("tabReg").onclick = () => renderAuth("register");
   document.getElementById("tabReset").onclick = () => renderAuth("reset");
+  app.querySelectorAll("[data-demo]").forEach((b) => {
+    b.onclick = () => {
+      const form = document.getElementById("authForm");
+      form.identifier.value = b.dataset.demo;
+      form.password.value = "VoltRescue!23";
+      form.requestSubmit();
+    };
+  });
   document.getElementById("authForm").onsubmit = async (e) => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target).entries());
     const msg = document.getElementById("authMsg");
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    if (submitBtn?.disabled) return;
+    if (submitBtn) submitBtn.disabled = true;
+    msg.className = "muted";
+    msg.textContent = "";
     try {
       if (mode === "login") {
         const data = await api("/auth/login", { method: "POST", body: JSON.stringify(fd) });
@@ -163,6 +303,8 @@ function renderAuth(mode = "login") {
     } catch (err) {
       msg.textContent = err.message;
       msg.className = "error";
+    } finally {
+      if (submitBtn?.isConnected) submitBtn.disabled = false;
     }
   };
   const cr = document.getElementById("confirmReset");
@@ -181,30 +323,77 @@ function renderAuth(mode = "login") {
 }
 
 function bindMap(latEl, lngEl) {
-  const start = [-6.7924, 39.2083];
-  map = L.map("map").setView(start, 12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OSM" }).addTo(map);
-  marker = L.marker(start, { draggable: true }).addTo(map);
-  const set = (lat, lng) => {
-    latEl.value = lat.toFixed(6);
-    lngEl.value = lng.toFixed(6);
-    marker.setLatLng([lat, lng]);
+  const start = [-6.7924, 39.2083]; // Dar es Salaam city centre
+  // The coordinates must always be populated, even if the map never renders.
+  latEl.value = start[0].toFixed(6);
+  lngEl.value = start[1].toFixed(6);
+
+  let set = (lat, lng) => {
+    latEl.value = Number(lat).toFixed(6);
+    lngEl.value = Number(lng).toFixed(6);
+    const readout = document.getElementById("coords");
+    if (readout) readout.textContent = `Pin at ${latEl.value}, ${lngEl.value}`;
   };
-  set(start[0], start[1]);
-  map.on("click", (e) => set(e.latlng.lat, e.latlng.lng));
-  marker.on("dragend", () => {
-    const p = marker.getLatLng();
-    set(p.lat, p.lng);
-  });
-  document.getElementById("geoBtn").onclick = () => {
-    if (!navigator.geolocation) return toast("Geolocation not available");
+
+  // Leaflet and its tiles come from the public internet. On a venue network
+  // that blocks them the form must still work, so fall back to manual entry
+  // rather than letting a ReferenceError take out the whole screen.
+  const mapEl = document.getElementById("map");
+  if (typeof L === "undefined") {
+    mapEl.className = "map-fallback";
+    mapEl.innerHTML = `<p>Map unavailable — no internet connection.</p>
+      <p class="muted">The pickup point defaults to Dar es Salaam city centre. Use <strong>Use my location</strong>, or type the coordinates.</p>
+      <label>Latitude <input id="mLat" type="number" step="0.000001" value="${start[0]}"></label>
+      <label>Longitude <input id="mLng" type="number" step="0.000001" value="${start[1]}"></label>
+      <p class="muted" id="coords">Pin at ${latEl.value}, ${lngEl.value}</p>`;
+    document.getElementById("mLat").oninput = (e) => set(e.target.value || start[0], lngEl.value);
+    document.getElementById("mLng").oninput = (e) => set(latEl.value, e.target.value || start[1]);
+  } else {
+    try {
+      map = L.map("map").setView(start, 12);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OSM", maxZoom: 19 }).addTo(map);
+      marker = L.marker(start, { draggable: true }).addTo(map);
+      const plot = set;
+      set = (lat, lng) => {
+        plot(lat, lng);
+        marker.setLatLng([Number(lat), Number(lng)]);
+      };
+      map.on("click", (e) => set(e.latlng.lat, e.latlng.lng));
+      marker.on("dragend", () => {
+        const p = marker.getLatLng();
+        set(p.lat, p.lng);
+      });
+      set(start[0], start[1]);
+    } catch {
+      mapEl.className = "map-fallback";
+      mapEl.innerHTML = `<p>Map could not be drawn.</p><p class="muted">The pickup point defaults to Dar es Salaam city centre; the request will still submit.</p>`;
+    }
+  }
+
+  // Bound outside the map branches so GPS capture survives a missing map.
+  document.getElementById("geoBtn").onclick = (e) => {
+    if (!navigator.geolocation) return toast("This browser cannot provide GPS.");
+    const btn = e.currentTarget;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Locating…";
+    const done = () => {
+      btn.disabled = false;
+      btn.textContent = original;
+    };
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude } = pos.coords;
-        map.setView([latitude, longitude], 15);
+        if (map) map.setView([latitude, longitude], 15);
         set(latitude, longitude);
+        toast("Location captured");
+        done();
       },
-      () => toast("Could not read GPS")
+      (err) => {
+        toast(err.code === 1 ? "Location permission denied — pin the map instead." : "Could not read GPS. Pin the map instead.");
+        done();
+      },
+      { timeout: 10000 }
     );
   };
 }
@@ -223,7 +412,7 @@ async function viewRequest() {
         <label>Address / landmark <input name="location" required placeholder="Street, building"></label>
         <label>Battery type
           <select name="battery_type">
-            <option>Lead-acid</option><option>Li-ion</option><option>Mixed household</option><option>Automotive</option>
+            ${BATTERY_TYPES.map((t) => `<option>${esc(t)}</option>`).join("")}
           </select>
         </label>
         <label>Quantity <input name="quantity" type="number" min="1" value="4" required></label>
@@ -241,80 +430,96 @@ async function viewRequest() {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target).entries());
     const msg = document.getElementById("pickupMsg");
-    try {
+    const btn = e.target.querySelector('button[type="submit"]');
+    msg.className = "muted";
+    msg.textContent = "";
+    await withBusy(btn, "Saving…", async () => {
       const data = await api("/pickup/create", { method: "POST", body: JSON.stringify(fd) });
       msg.className = "oktext";
-      msg.textContent = "Saved as #" + data.request.request_id + " · " + data.request.status;
+      msg.textContent = `Saved as #${data.request.request_id} — ${label(data.request.status)}`;
       toast("Pickup stored in database");
       view = "track";
       route();
-    } catch (err) {
-      msg.className = "error";
-      msg.textContent = err.message;
-    }
+    });
   };
 }
 
 function card(p, extra = "") {
-  return `<article class="card" data-id="${p.request_id}">
-    <header style="display:flex;justify-content:space-between;gap:8px">
-      <strong>#${p.request_id} · ${p.location}</strong>
-      <span class="status">${p.status}</span>
+  const failed = FAILURE_STATES.includes(p.status);
+  return `<article class="card${failed ? " is-failed" : ""}" data-id="${esc(p.request_id)}">
+    <header style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+      <strong>#${esc(p.request_id)} · ${esc(p.location)}</strong>
+      <span class="status${failed ? " bad" : ""}" title="${esc(p.status)}">${esc(label(p.status))}</span>
     </header>
     ${progressHtml(p.status)}
-    <p>${p.quantity} × ${p.battery_type}${p.citizen_name ? " · " + p.citizen_name : ""}</p>
-    ${p.latitude ? `<p class="muted">GPS ${p.latitude}, ${p.longitude}
-      ${p.nav_link ? ` · <a href="${p.google_nav || p.nav_link}" target="_blank" rel="noopener">Navigate</a>` : ""}</p>` : ""}
+    <p>${esc(p.quantity)} × ${esc(p.battery_type)}${p.citizen_name ? " · " + esc(p.citizen_name) : ""}</p>
+    ${p.latitude ? `<p class="muted">GPS ${esc(p.latitude)}, ${esc(p.longitude)}
+      ${p.nav_link ? ` · <a href="${esc(p.google_nav || p.nav_link)}" target="_blank" rel="noopener">Navigate</a>` : ""}</p>` : ""}
     ${extra}
   </article>`;
 }
 
 async function viewTrack() {
   layout(`<section class="grid"><h2>Your requests</h2><div id="list" class="loading">Loading…</div></section>`);
+  const list = document.getElementById("list");
   try {
     const data = await api("/pickup");
-    const list = document.getElementById("list");
+    list.className = "";
     if (!data.items.length) {
-      list.innerHTML = `<div class="empty">No pickup requests yet.</div>`;
+      list.innerHTML = `<div class="empty">You have not requested a pickup yet.
+        <p class="muted">Choose <strong>Request pickup</strong> above to book your first collection.</p></div>`;
       return;
     }
     list.className = "grid";
-    list.innerHTML = data.items.map((p) => card(p, `<button class="btn" data-open="${p.request_id}">Open timeline</button>`)).join("");
+    list.innerHTML = data.items.map((p) => card(p, `<button class="btn" data-open="${esc(p.request_id)}">Open timeline</button>`)).join("");
     list.querySelectorAll("[data-open]").forEach((b) =>
       b.addEventListener("click", () => openDetail(Number(b.dataset.open)))
     );
   } catch (err) {
-    document.getElementById("list").innerHTML = `<p class="error">${err.message}</p>`;
+    list.className = "";
+    list.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    handleError(err);
   }
 }
 
 async function openDetail(id) {
-  const data = await api("/pickup/" + id);
+  let data;
+  try {
+    data = await api("/pickup/" + id);
+  } catch (err) {
+    return handleError(err);
+  }
   const p = data.request;
   const tl = (p.timeline || [])
-    .map(
-      (h) => `<li><span class="dot done"></span><div><strong>${h.new_status}</strong><div class="muted">${h.updated_time} · ${h.actor_name || "system"} ${h.note ? " · " + h.note : ""}</div></div></li>`
-    )
+    .map((h) => {
+      const bad = FAILURE_STATES.includes(h.new_status);
+      return `<li><span class="dot ${bad ? "bad" : "done"}"></span><div>
+        <strong>${esc(label(h.new_status))}</strong>
+        <div class="muted">${esc(h.updated_time)} · ${esc(h.actor_name || "system")}${h.note ? " · " + esc(h.note) : ""}</div>
+      </div></li>`;
+    })
     .join("");
   const ups = (p.uploads || [])
-    .map((u) => `<div><img class="preview" alt="${u.kind}" src="/${u.file_path}"><div class="muted">${u.kind} · ${u.created_at}</div></div>`)
+    .map((u) => `<div><img class="preview" alt="${esc(u.kind)} evidence" src="/${esc(u.file_path)}"><div class="muted">${esc(u.kind)} · ${esc(u.created_at)}</div></div>`)
     .join("");
+  const failed = FAILURE_STATES.includes(p.status);
   layout(`<section class="card">
-    <button class="btn ghost" id="back">Back</button>
-    <h2>Request #${p.request_id}</h2>
-    ${progressHtml(p.status)}
-    <p class="status">${p.status}</p>
-    <p>${p.quantity} × ${p.battery_type} at ${p.location}</p>
+    <button class="btn ghost" id="back">← Back</button>
+    <h2>Request #${esc(p.request_id)}</h2>
+    ${progressHtml(p.status, p.timeline)}
+    <p class="status${failed ? " bad" : ""}" title="${esc(p.status)}">${esc(label(p.status))}</p>
+    <p>${esc(p.quantity)} × ${esc(p.battery_type)} at ${esc(p.location)}</p>
     <h3>Timeline</h3>
-    <ol class="timeline">${tl || "<li>No history</li>"}</ol>
+    <ol class="timeline">${tl || "<li class='muted'>No history yet.</li>"}</ol>
     <h3>Evidence</h3>
     ${ups || "<p class='muted'>No photos yet.</p>"}
-    ${me.role !== "citizen" ? `<form id="up" class="stack"><input type="hidden" name="request_id" value="${p.request_id}">
+    ${me.role !== "citizen" ? `<form id="up" class="stack"><input type="hidden" name="request_id" value="${esc(p.request_id)}">
       <label>Photo kind
         <select name="kind"><option>pickup</option><option>handover</option><option>receipt</option></select>
       </label>
       <input type="file" name="file" accept="image/*" required>
-      <button class="btn">Upload evidence</button></form>` : ""}
+      <button class="btn" type="submit">Upload evidence</button>
+      <p class="muted" id="upMsg">JPG, PNG or WebP. Maximum 5 MB.</p></form>` : ""}
   </section>`);
   document.getElementById("back").onclick = route;
   const up = document.getElementById("up");
@@ -322,34 +527,53 @@ async function openDetail(id) {
     up.onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(up);
-      const file = up.querySelector('input[type=file]').files[0];
-      const buf = await file.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let bin = "";
-      bytes.forEach((b) => (bin += String.fromCharCode(b)));
-      await api("/uploads", {
-        method: "POST",
-        body: JSON.stringify({
-          request_id: Number(fd.get("request_id")),
-          kind: fd.get("kind"),
-          mime: file.type,
-          data: btoa(bin),
-        }),
+      const file = up.querySelector("input[type=file]").files[0];
+      const msg = document.getElementById("upMsg");
+      if (!file) return;
+      // The server caps uploads at 5 MB; say so before spending time encoding.
+      if (file.size > 5 * 1024 * 1024) {
+        msg.className = "error";
+        msg.textContent = `That photo is ${(file.size / 1048576).toFixed(1)} MB. The limit is 5 MB.`;
+        return;
+      }
+      msg.className = "muted";
+      msg.textContent = "";
+      await withBusy(e.submitter || up.querySelector('button[type="submit"]'), "Uploading…", async () => {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let bin = "";
+        bytes.forEach((b) => (bin += String.fromCharCode(b)));
+        await api("/uploads", {
+          method: "POST",
+          body: JSON.stringify({
+            request_id: Number(fd.get("request_id")),
+            kind: fd.get("kind"),
+            mime: file.type,
+            data: btoa(bin),
+          }),
+        });
+        toast("Photo stored");
+        openDetail(id);
       });
-      toast("Photo stored");
-      openDetail(id);
     };
   }
 }
 
 async function viewCollector() {
   layout(`<section class="grid"><h2>Collector assignments</h2><div id="list" class="loading">Loading…</div></section>`);
-  const data = await api("/collector/tasks");
-  const rec = await api("/recyclers").catch(() => ({ items: [] }));
-  const recOpts = rec.items.map((r) => `<option value="${r.recycler_id}">${r.company_name}</option>`).join("");
   const list = document.getElementById("list");
+  let data, rec;
+  try {
+    data = await api("/collector/tasks");
+    rec = await api("/recyclers").catch(() => ({ items: [] }));
+  } catch (err) {
+    list.className = "";
+    list.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    return handleError(err);
+  }
+  const recOpts = rec.items.map((r) => `<option value="${esc(r.recycler_id)}">${esc(r.company_name)}</option>`).join("");
   if (!data.items.length) {
-    list.innerHTML = `<div class="empty">No assignments yet.</div>`;
+    list.className = "";
+    list.innerHTML = `<div class="empty">No assignments yet. Jobs appear here as soon as the control room assigns them to you.</div>`;
     return;
   }
   list.className = "grid";
@@ -358,7 +582,7 @@ async function viewCollector() {
       const next = COLLECTOR_NEXT[p.status];
       let actions = `<button class="btn" data-open="${p.request_id}">Timeline</button>`;
       if (p.status === "COLLECTOR_ASSIGNED") actions += `<button class="btn primary" data-accept="${p.request_id}">Accept assignment</button>`;
-      if (next) actions += `<button class="btn ok" data-next="${next}" data-id="${p.request_id}">Mark ${next}</button>`;
+      if (next) actions += `<button class="btn ok" data-next="${esc(next)}" data-id="${esc(p.request_id)}">Mark ${esc(label(next))}</button>`;
       if (p.status === "IN_COLLECTOR_CUSTODY" || p.status === "TRANSFER_SCHEDULED") {
         actions += `<form data-hand="${p.request_id}" class="stack"><select name="recycler_id">${recOpts}</select><button class="btn">Transfer to recycler</button></form>`;
       }
@@ -368,47 +592,63 @@ async function viewCollector() {
       return card(p, actions);
     })
     .join("");
-  list.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => openDetail(Number(b.dataset.open)));
+  list.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openDetail(Number(b.dataset.open))));
   list.querySelectorAll("[data-accept]").forEach((b) => {
-    b.onclick = async () => {
-      await api("/collector/accept", { method: "POST", body: JSON.stringify({ request_id: Number(b.dataset.accept) }) });
-      toast("Accepted");
-      viewCollector();
-    };
+    b.onclick = () =>
+      withBusy(b, "Accepting…", async () => {
+        await api("/collector/accept", { method: "POST", body: JSON.stringify({ request_id: Number(b.dataset.accept) }) });
+        toast("Assignment accepted");
+        viewCollector();
+      });
   });
   list.querySelectorAll("[data-next]").forEach((b) => {
-    b.onclick = async () => {
-      await api("/pickup/status", { method: "PUT", body: JSON.stringify({ request_id: Number(b.dataset.id), status: b.dataset.next }) });
-      toast("Status saved");
-      viewCollector();
-    };
+    b.onclick = () =>
+      withBusy(b, "Saving…", async () => {
+        await api("/pickup/status", { method: "PUT", body: JSON.stringify({ request_id: Number(b.dataset.id), status: b.dataset.next }) });
+        toast(`Status updated to ${label(b.dataset.next)}`);
+        viewCollector();
+      });
   });
   list.querySelectorAll("[data-fail]").forEach((b) => {
-    b.onclick = async () => {
-      await api("/pickup/status", { method: "PUT", body: JSON.stringify({ request_id: Number(b.dataset.id), status: b.dataset.fail, note: "No show" }) });
-      viewCollector();
+    b.onclick = () => {
+      if (!confirm("Report this pickup as a no-show?\n\nThe resident and the control room are notified, and the job leaves your list.")) return;
+      withBusy(b, "Reporting…", async () => {
+        await api("/pickup/status", { method: "PUT", body: JSON.stringify({ request_id: Number(b.dataset.id), status: b.dataset.fail, note: "Nobody present at the address" }) });
+        toast("No-show reported");
+        viewCollector();
+      });
     };
   });
   list.querySelectorAll("[data-hand]").forEach((f) => {
-    f.onsubmit = async (e) => {
+    f.onsubmit = (e) => {
       e.preventDefault();
       const recycler_id = Number(new FormData(f).get("recycler_id"));
-      await api("/collector/handover", { method: "POST", body: JSON.stringify({ request_id: Number(f.dataset.hand), recycler_id }) });
-      toast("Handover recorded");
-      viewCollector();
+      withBusy(f.querySelector("button"), "Transferring…", async () => {
+        await api("/collector/handover", { method: "POST", body: JSON.stringify({ request_id: Number(f.dataset.hand), recycler_id }) });
+        toast("Custody transferred to the recycler");
+        viewCollector();
+      });
     };
   });
 }
 
 async function viewRecycler() {
   layout(`<section class="grid"><h2>Incoming batteries</h2><div id="list" class="loading">Loading…</div></section>`);
-  const data = await api("/pickup");
   const list = document.getElementById("list");
+  let data;
+  try {
+    data = await api("/pickup");
+  } catch (err) {
+    list.className = "";
+    list.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    return handleError(err);
+  }
   const items = data.items.filter((p) =>
     ["IN_TRANSIT_TO_RECYCLER", "RECEIVED_BY_RECYCLER", "RECYCLER_VALIDATED", "RECYCLER_REJECTED", "PROCESS_COMPLETED"].includes(p.status)
   );
   if (!items.length) {
-    list.innerHTML = `<div class="empty">No incoming transfers.</div>`;
+    list.className = "";
+    list.innerHTML = `<div class="empty">No incoming transfers. Loads appear here once a collector dispatches them to you.</div>`;
     return;
   }
   list.className = "grid";
@@ -422,11 +662,15 @@ async function viewRecycler() {
     })
     .join("");
   list.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openDetail(Number(b.dataset.open))));
+  const ACT_LABEL = { receive: "Receipt confirmed", reject: "Load rejected", validate: "Materials validated", complete: "Processing completed" };
   list.querySelectorAll("[data-act]").forEach((b) => {
-    b.onclick = async () => {
-      await api("/recycler/confirm", { method: "POST", body: JSON.stringify({ request_id: Number(b.dataset.id), action: b.dataset.act }) });
-      toast("Recycler update saved");
-      viewRecycler();
+    b.onclick = () => {
+      if (b.dataset.act === "reject" && !confirm("Reject this load?\n\nCustody returns to the collector and everyone is notified. This is recorded permanently in the audit trail.")) return;
+      withBusy(b, "Saving…", async () => {
+        await api("/recycler/confirm", { method: "POST", body: JSON.stringify({ request_id: Number(b.dataset.id), action: b.dataset.act }) });
+        toast(ACT_LABEL[b.dataset.act] || "Update saved");
+        viewRecycler();
+      });
     };
   });
 }
@@ -436,56 +680,79 @@ async function viewAdmin() {
     <h2>Operations dashboard</h2>
     <div class="toolbar">
       <input id="q" placeholder="Search location, name, type">
-      <select id="st"><option value="">All statuses</option>${FLOW.concat(["CANCELLED","REJECTED","NO_SHOW","TRANSFER_FAILED","RECYCLER_REJECTED"]).map((s)=>`<option>${s}</option>`).join("")}</select>
+      <select id="st"><option value="">All statuses</option>${FLOW.concat(FAILURE_STATES).map((s)=>`<option value="${esc(s)}">${esc(label(s))}</option>`).join("")}</select>
       <button class="btn" id="apply">Filter</button>
       <a class="btn" href="/api/admin/export" id="export">Export CSV</a>
     </div>
     <div id="kpis" class="kpis"></div>
-    <div class="card table-wrap" id="table">Loading…</div>
+    <div class="card table-wrap" id="table"><span class="loading">Loading…</span></div>
     <div class="card" id="people"></div>
   </section>`);
-  document.getElementById("export").onclick = async (e) => {
+  document.getElementById("export").onclick = (e) => {
     e.preventDefault();
-    const res = await fetch("/api/admin/export", { headers: { Authorization: "Bearer " + token } });
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "voltrescue-requests.csv";
-    a.click();
+    withBusy(e.currentTarget, "Exporting…", async () => {
+      const res = await fetch("/api/admin/export", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "voltrescue-requests.csv";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("CSV downloaded");
+    });
   };
+  const KPI_LABEL = {
+    today: "Submitted today",
+    pending_assignment: "Awaiting assignment",
+    assigned: "Assigned / active",
+    recycler_pending: "With recycler",
+    completed: "Completed",
+    failed: "Exceptions",
+  };
+  const KPI_ORDER = ["today", "pending_assignment", "assigned", "recycler_pending", "completed", "failed"];
   const load = async (page = 1) => {
     const q = document.getElementById("q").value;
     const status = document.getElementById("st").value;
-    const dash = await api(`/admin/dashboard?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&page=${page}&sort=request_id&dir=desc`);
-    const users = await api("/admin/users");
-    document.getElementById("kpis").innerHTML = Object.entries(dash.kpis)
-      .map(([k, v]) => `<div class="kpi"><strong>${v}</strong><span>${k.replaceAll("_", " ")}</span></div>`)
+    let dash, users;
+    try {
+      dash = await api(`/admin/dashboard?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&page=${page}&sort=request_id&dir=desc`);
+      users = await api("/admin/users");
+    } catch (err) {
+      document.getElementById("table").innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      return handleError(err);
+    }
+    document.getElementById("kpis").innerHTML = KPI_ORDER.filter((k) => k in dash.kpis)
+      .map((k) => `<div class="kpi${k === "failed" && dash.kpis[k] > 0 ? " warn" : ""}"><strong>${esc(dash.kpis[k])}</strong><span>${esc(KPI_LABEL[k])}</span></div>`)
       .join("");
-    const colOpts = users.collectors.map((c) => `<option value="${c.collector_id}">${c.name}</option>`).join("");
-    document.getElementById("table").innerHTML = `
-      <table>
+    const colOpts = users.collectors.map((c) => `<option value="${esc(c.collector_id)}">${esc(c.name)}</option>`).join("");
+    document.getElementById("table").innerHTML = dash.items.length
+      ? `<table>
         <thead><tr><th>ID</th><th>Citizen</th><th>Where</th><th>Qty</th><th>Status</th><th>Assign / override</th></tr></thead>
         <tbody>
           ${dash.items
             .map(
               (p) => `<tr>
-                <td>#${p.request_id}</td><td>${p.citizen_name}</td><td>${p.location}</td><td>${p.quantity}</td>
-                <td class="status">${p.status}</td>
+                <td>#${esc(p.request_id)}</td><td>${esc(p.citizen_name)}</td><td>${esc(p.location)}</td><td>${esc(p.quantity)}</td>
+                <td class="status${FAILURE_STATES.includes(p.status) ? " bad" : ""}" title="${esc(p.status)}">${esc(label(p.status))}</td>
                 <td>
-                  <select data-col="${p.request_id}">${colOpts}</select>
-                  <button class="btn" data-assign="${p.request_id}">Assign</button>
-                  <select data-ov="${p.request_id}">${FLOW.concat(["CANCELLED","REJECTED","NO_SHOW","TRANSFER_FAILED","RECYCLER_REJECTED"]).map((s)=>`<option ${s===p.status?"selected":""}>${s}</option>`).join("")}</select>
-                  <button class="btn danger" data-over="${p.request_id}">Override</button>
+                  <select data-col="${esc(p.request_id)}" aria-label="Collector for request ${esc(p.request_id)}">${colOpts}</select>
+                  <button class="btn" data-assign="${esc(p.request_id)}">Assign</button>
+                  <select data-ov="${esc(p.request_id)}" aria-label="Override status for request ${esc(p.request_id)}">${FLOW.concat(FAILURE_STATES).map((s)=>`<option value="${esc(s)}" ${s===p.status?"selected":""}>${esc(label(s))}</option>`).join("")}</select>
+                  <button class="btn danger" data-over="${esc(p.request_id)}">Override</button>
                 </td>
               </tr>`
             )
             .join("")}
         </tbody>
       </table>
-      <p class="muted">Page ${dash.page} · ${dash.total} rows
+      <p class="muted">Page ${esc(dash.page)} · ${esc(dash.total)} rows
         <button class="btn ghost" ${dash.page <= 1 ? "disabled" : ""} id="prev">Prev</button>
-        <button class="btn ghost" id="next">Next</button></p>
-      <p class="muted">Collector workload: ${dash.workload.map((w) => w.name + " (" + w.jobs + ")").join(", ") || "none"}</p>`;
+        <button class="btn ghost" ${dash.page * dash.size >= dash.total ? "disabled" : ""} id="next">Next</button></p>
+      <p class="muted">Collector workload: ${esc(dash.workload.map((w) => w.name + " (" + w.jobs + ")").join(", ")) || "none"}</p>`
+      : `<div class="empty">No requests match that filter.</div>
+         <p class="muted"><button class="btn ghost" id="prev" disabled>Prev</button>
+         <button class="btn ghost" id="next" disabled>Next</button></p>`;
     document.getElementById("people").innerHTML = `
       <h3>User management</h3>
       <form id="newUser" class="stack">
@@ -497,7 +764,7 @@ async function viewAdmin() {
         <button class="btn primary">Create user</button>
       </form>
       <div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Phone</th></tr></thead>
-      <tbody>${users.users.map((u) => `<tr><td>${u.name}</td><td>${u.role}</td><td>${u.phone}</td></tr>`).join("")}</tbody></table></div>
+      <tbody>${users.users.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.role)}</td><td>${esc(u.phone)}</td></tr>`).join("")}</tbody></table></div>
       <p><a class="btn" id="auditBtn">Audit logs</a>
          · <button class="btn ghost" id="mpesa">M-Pesa sandbox auth</button>
          · <button class="btn ghost" id="notifQ">Process notification queue</button></p>
@@ -505,89 +772,133 @@ async function viewAdmin() {
     document.getElementById("prev").onclick = () => load(page - 1);
     document.getElementById("next").onclick = () => load(page + 1);
     document.querySelectorAll("[data-assign]").forEach((b) => {
-      b.onclick = async () => {
-        const collector_id = Number(document.querySelector(`[data-col="${b.dataset.assign}"]`).value);
-        await api("/admin/assign", { method: "POST", body: JSON.stringify({ request_id: Number(b.dataset.assign), collector_id }) });
-        toast("Collector assigned");
-        load(page);
-      };
+      b.onclick = () =>
+        withBusy(b, "Assigning…", async () => {
+          const collector_id = Number(document.querySelector(`[data-col="${b.dataset.assign}"]`).value);
+          await api("/admin/assign", { method: "POST", body: JSON.stringify({ request_id: Number(b.dataset.assign), collector_id }) });
+          toast("Collector assigned");
+          load(page);
+        });
     });
     document.querySelectorAll("[data-over]").forEach((b) => {
-      b.onclick = async () => {
+      b.onclick = () => {
         const status = document.querySelector(`[data-ov="${b.dataset.over}"]`).value;
-        await api("/pickup/status", { method: "PUT", body: JSON.stringify({ request_id: Number(b.dataset.over), status, override: true, note: "Admin override" }) });
-        load(page);
+        // An override bypasses the lifecycle rules, so make it a deliberate act.
+        if (!confirm(`Force request #${b.dataset.over} to "${label(status)}"?\n\nThis bypasses the normal workflow rules and is recorded in the audit trail as an override, under your name.`)) return;
+        withBusy(b, "Overriding…", async () => {
+          await api("/pickup/status", { method: "PUT", body: JSON.stringify({ request_id: Number(b.dataset.over), status, override: true, note: "Admin override" }) });
+          toast(`Request #${b.dataset.over} forced to ${label(status)}`);
+          load(page);
+        });
       };
     });
-    document.getElementById("newUser").onsubmit = async (e) => {
+    document.getElementById("newUser").onsubmit = (e) => {
       e.preventDefault();
-      await api("/admin/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(e.target).entries())) });
-      toast("User created");
-      load(page);
+      const form = e.target;
+      withBusy(form.querySelector("button"), "Creating…", async () => {
+        await api("/admin/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+        toast("User created");
+        load(page);
+      });
     };
-    document.getElementById("auditBtn").onclick = async () => {
-      view = "audit";
-      const logs = await api("/audit/logs");
-      layout(`<section class="card"><h2>Audit logs</h2><button class="btn ghost" id="back">Back</button>
-        <table><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Entity</th></tr></thead>
-        <tbody>${logs.items.map((l) => `<tr><td>${l.timestamp}</td><td>${l.action}</td><td>${l.actor_name || l.actor}</td><td>${l.entity} ${l.entity_id}</td></tr>`).join("")}</tbody></table></section>`);
-      document.getElementById("back").onclick = () => {
-        view = "admin";
-        viewAdmin();
-      };
-    };
-    document.getElementById("mpesa").onclick = async () => {
-      const r = await api("/mpesa/sandbox/auth");
-      toast(r.sandbox ? "M-Pesa sandbox connector ready" : "M-Pesa auth returned");
-    };
+    document.getElementById("auditBtn").onclick = (e) =>
+      withBusy(e.currentTarget, "Loading…", async () => {
+        const logs = await api("/audit/logs");
+        view = "audit";
+        layout(`<section class="card"><h2>Audit log</h2><button class="btn ghost" id="back">← Back to dashboard</button>
+          <p class="muted">Newest first. Every entry is written by the server, not the interface.</p>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Record</th></tr></thead>
+          <tbody>${logs.items.map((l) => `<tr><td>${esc(l.timestamp)}</td><td>${esc(l.action)}</td><td>${esc(l.actor_name || l.actor || "system")}</td><td>${esc(l.entity)} ${esc(l.entity_id)}</td></tr>`).join("")}</tbody></table></div></section>`);
+        document.getElementById("back").onclick = () => {
+          view = "admin";
+          viewAdmin();
+        };
+      });
+    document.getElementById("mpesa").onclick = (e) =>
+      withBusy(e.currentTarget, "Checking…", async () => {
+        const r = await api("/mpesa/sandbox/auth");
+        toast(r.sandbox ? "M-Pesa sandbox connector ready — no live transactions" : "M-Pesa auth returned");
+      });
     const showNotifStats = async () => {
-      const s = await api("/notifications/stats");
-      const counts = s.by_channel.map((c) => `${c.channel}/${c.status}: ${c.total}`).join(" · ");
-      document.getElementById("notifStats").textContent =
-        `Notifications — ${counts || "none yet"} · queue pending: ${s.queue_pending} · provider: ${s.live_provider ? "live" : "sandbox (no API key)"}`;
+      try {
+        const s = await api("/notifications/stats");
+        const counts = s.by_channel.map((c) => `${c.channel}/${c.status}: ${c.total}`).join(" · ");
+        document.getElementById("notifStats").textContent =
+          `Notifications — ${counts || "none yet"} · queue pending: ${s.queue_pending} · provider: ${s.live_provider ? "live" : "sandbox (no API key)"}`;
+      } catch {
+        document.getElementById("notifStats").textContent = "Notification statistics unavailable.";
+      }
     };
-    document.getElementById("notifQ").onclick = async () => {
-      const r = await api("/notifications/process", { method: "POST" });
-      toast(`Queue processed: ${r.processed}, pending: ${r.pending}`);
-      showNotifStats();
-    };
+    document.getElementById("notifQ").onclick = (e) =>
+      withBusy(e.currentTarget, "Processing…", async () => {
+        const r = await api("/notifications/process", { method: "POST" });
+        toast(`Queue processed: ${r.processed} sent, ${r.pending} still pending`);
+        showNotifStats();
+      });
     showNotifStats();
   };
   document.getElementById("apply").onclick = () => load(1);
+  document.getElementById("q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") load(1);
+  });
+  document.getElementById("st").onchange = () => load(1);
   load(1);
 }
 
 async function viewInbox() {
-  layout(`<section class="card"><h2>Notifications</h2><div id="n" class="loading">Loading…</div></section>`);
-  const data = await api("/notifications");
-  document.getElementById("n").innerHTML = data.items.length
-    ? `<ul>${data.items.map((n) => `<li><strong>${n.channel}</strong> · ${n.status}<div>${n.message}</div><div class="muted">${n.created_at}</div></li>`).join("")}</ul>`
-    : `<div class="empty">No alerts yet.</div>`;
+  layout(`<section class="card"><h2>Notifications</h2>
+    <p class="muted">Every message the platform has sent to you. In the pilot these are written to the database rather than billed to a live gateway.</p>
+    <div id="n" class="loading">Loading…</div></section>`);
+  const box = document.getElementById("n");
+  let data;
+  try {
+    data = await api("/notifications");
+  } catch (err) {
+    box.className = "";
+    box.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    return handleError(err);
+  }
+  box.className = "";
+  box.innerHTML = data.items.length
+    ? `<ul class="alerts">${data.items
+        .map(
+          (n) => `<li><div><strong>${esc(n.channel)}</strong> <span class="pill">${esc(n.status)}</span></div>
+            <div>${esc(n.message)}</div><div class="muted">${esc(n.created_at)}</div></li>`
+        )
+        .join("")}</ul>`
+    : `<div class="empty">No alerts yet. Messages arrive here as your pickups move through the process.</div>`;
 }
 
 async function viewProfile() {
   layout(`<section class="card"><h2>Profile</h2>
     <form id="pf" class="stack">
-      <label>Name <input name="name" value="${me.name}"></label>
-      <label>Email <input name="email" value="${me.email}"></label>
-      <button class="btn primary">Save</button>
+      <label>Name <input name="name" value="${esc(me.name)}" required></label>
+      <label>Email <input name="email" type="email" value="${esc(me.email)}" required></label>
+      <button class="btn primary" type="submit">Save</button>
     </form>
-    <p class="muted">Role: ${me.role} · Phone ${me.phone}</p>
-    <p class="muted">AI recognition, rewards, certificates and commercial analytics are Phase 2 hooks only.</p>
+    <p class="muted">Role: ${esc(me.role)} · Phone ${esc(me.phone)}</p>
+    <p class="muted">Battery recognition from photos, reward points, recycling certificates and commercial analytics are Phase 2 — the data model reserves space for them but nothing is wired up.</p>
   </section>`);
-  document.getElementById("pf").onsubmit = async (e) => {
+  document.getElementById("pf").onsubmit = (e) => {
     e.preventDefault();
-    await api("/auth/me", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(e.target).entries())) });
-    me = (await api("/auth/me")).user;
-    toast("Profile saved");
-    route();
+    const form = e.target;
+    withBusy(form.querySelector("button"), "Saving…", async () => {
+      await api("/auth/me", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+      me = (await api("/auth/me")).user;
+      toast("Profile saved");
+      route();
+    });
   };
 }
 
 async function route() {
   if (!token || !me) return renderAuth();
   const pages = { request: viewRequest, track: viewTrack, collector: viewCollector, recycler: viewRecycler, admin: viewAdmin, inbox: viewInbox, profile: viewProfile };
-  await (pages[view] || viewRequest)();
+  try {
+    await (pages[view] || viewRequest)();
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 async function boot() {

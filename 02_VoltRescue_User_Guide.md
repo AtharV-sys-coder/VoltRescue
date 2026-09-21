@@ -106,9 +106,9 @@ You are logged in immediately and taken to the screen for your role. A welcome a
 
 You land directly on the right screen for your role: citizens on the pickup request form, collectors on their assignments, recyclers on incoming loads, administrators on the operations dashboard.
 
-The login form is pre-filled with the administrator demo account for convenience during the pilot. Clear those boxes and type your own details.
+Beneath the form, during the pilot only, there is a row of buttons labelled **Citizen, Collector, Recycler and Admin** under the heading "Pilot demonstration accounts". Pressing one signs you straight into that demonstration account, which saves retyping when you need to see the same pickup from more than one point of view. These buttons exist for the pilot and are removed before the system is given to real users.
 
-**Your session lasts eight hours.** After that you will be asked to sign in again. Closing the browser tab also ends the session — this is deliberate, so a shared phone does not stay logged in.
+**Your session lasts eight hours.** After that you will be asked to sign in again, and the system returns you to the sign-in screen by itself rather than showing an error. Closing the browser tab also ends the session — this is deliberate, so a shared phone does not stay logged in.
 
 ### 2.3 Password reset
 
@@ -575,7 +575,8 @@ Not in Phase 1. Certificates, rewards, and carbon tracking are Phase 2.
 | Page will not load at all | The server is not running, or the wrong address | Run `start.ps1` and open `http://127.0.0.1:8815/` |
 | *This site can't be reached* / connection refused | The server window was closed, or the port changed | Restart `start.ps1` and check the address it prints in the black window |
 | Logged out unexpectedly | Session expired after eight hours, or the tab was closed | Sign in again |
-| Login box is pre-filled with the admin account | Pilot convenience default | Clear the boxes and type your own details |
+| The map does not appear on the request form | No internet connection, so the map library could not load | The form still works. The pickup point defaults to Dar es Salaam city centre — press **Use my location**, or type the coordinates into the boxes shown in place of the map |
+| You are returned to the sign-in screen unexpectedly | Your eight-hour session expired | Sign in again. Nothing you already submitted is lost |
 
 ### 9.2 Assignment issues
 

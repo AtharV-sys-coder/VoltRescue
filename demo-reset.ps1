@@ -136,7 +136,7 @@ foreach ($c in $caseload) {
     latitude = $c.lat; longitude = $c.lon; remarks = $c.note
   } $tok
   $rid = [int](@($r.request.request_id) | Select-Object -First 1)
-  $created += @{ id = $rid; age = $c.age; stage = $c.stage }
+  $created += @{ id = $rid; age = $c.age; stage = $c.stage; who = $c.who; loc = $c.loc }
 
   if ($c.stage -eq 'pending') { continue }
 
@@ -197,5 +197,36 @@ Write-Host ("  Completed           : {0}" -f $dash.kpis.completed)
 Write-Host ("  Failed / exceptions : {0}" -f $dash.kpis.failed)
 Write-Host ("  Notifications sent  : {0}" -f (Sql "SELECT COUNT(*) FROM notifications;"))
 Write-Host ("  Audit records       : {0}" -f (Sql "SELECT COUNT(*) FROM audit_logs;"))
+
+# --- 7. Cheat sheet ---------------------------------------------------------
+# Request ids are assigned by the database and therefore change on every reset.
+# Printing them here — and saving them to a file — stops the briefing document
+# from carrying numbers that have long since gone stale.
+function Pick([string]$stage, [string]$who) {
+  $m = $created | Where-Object { $_.stage -eq $stage -and (-not $who -or $_.who -eq $who) } | Select-Object -First 1
+  if ($m) { "#{0} - {1}" -f $m.id, $m.loc } else { "(none)" }
+}
+
+$sheet = @(
+  ""
+  "  ON-SCREEN RECORDS FOR THE DEMONSTRATION"
+  "  (ids change on every reset - these are today's)"
+  ""
+  ("  Completed, full 12-stage timeline : {0}" -f (Pick 'complete' 'Amina Hassan'))
+  ("  Second completed example          : {0}" -f (Pick 'complete' 'Fatuma Said'))
+  ("  The no-show (exception path)      : {0}" -f (Pick 'noshow'   ''))
+  ("  Sitting with the recycler         : {0}" -f (Pick 'received' ''))
+  ("  In transit to the recycler        : {0}" -f (Pick 'transit'  ''))
+  ("  Collector currently en route      : {0}" -f (Pick 'enroute'  ''))
+  ("  Awaiting assignment (assign this) : {0}" -f (Pick 'pending'  ''))
+  ""
+  "  Amina Hassan is the citizen login and owns both a finished journey"
+  "  and a live one, so you can show tracking either way."
+  ""
+)
+$sheet | ForEach-Object { Write-Host $_ -ForegroundColor Cyan }
+$sheet | Set-Content -Path (Join-Path $root 'demo-cheatsheet.txt') -Encoding UTF8
+
+Write-Host "  Saved to demo-cheatsheet.txt" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Open $($base -replace '/api$','/')   admin@voltrescue.local / VoltRescue!23"

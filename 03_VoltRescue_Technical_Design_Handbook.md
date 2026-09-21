@@ -5,7 +5,7 @@
 **System version:** VoltRescue POC — Dar es Salaam pilot, Phase 1
 **Runtime host:** PowerShell `HttpListener` on `http://127.0.0.1:8815/`
 **Datastore:** SQLite, `data/voltrescue.sqlite`
-**Last verified test run:** 168 checks executed (42 unit + 126 API), 168 passed, 0 failed
+**Last verified test run:** 170 checks executed (42 unit + 128 API), 170 passed, 0 failed
 **Companion documents:** `01_VoltRescue_Process_Flow_Guide.md`, `02_VoltRescue_User_Guide.md`
 
 > **Read this first.** There are **two** server implementations in this repository. `server.ps1` (PowerShell) is the one that actually runs and is the subject of every statement in this handbook unless stated otherwise. The PHP tree under `api/` is a complete, functionally equivalent reference implementation that **cannot execute on the pilot machine** because Windows Application Control blocks the unsigned `php.exe`. Section 3 explains which is which, and section 19 covers the consequences.
@@ -1225,6 +1225,7 @@ The two gaps are recorded again in section 19 and should be closed before any mu
 | Secrets | `.env`, git-ignored, no credentials in source | Implemented |
 | Transport | **HTTP only, loopback only** | **Not production-safe** |
 | SQL injection | String building with quote escaping | **Weak — see below** |
+| Cross-site scripting | `esc()` HTML-encodes every value interpolated into the DOM | Implemented — see 13.3 |
 | CORS | Wildcard origin | Acceptable on loopback only |
 | Enumeration | Password reset and login return neutral messages | Implemented |
 
@@ -1235,6 +1236,27 @@ The two gaps are recorded again in section 19 and should be closed before any mu
 Two facts make this survivable today: the listener binds to `127.0.0.1` only, and every caller must already hold a valid JWT for the vast majority of routes. Neither will remain true in production.
 
 **Mandatory before any network exposure:** move to parameterised queries. The PHP reference already does this with PDO throughout, which is the cleanest justification for making the PHP host the production target.
+
+### 13.3 Output encoding in the frontend
+
+The frontend renders by assigning template strings to `innerHTML`. Until recently it interpolated stored values directly, which meant an address, a remark, a company name or a status note containing markup was parsed as HTML rather than displayed as text.
+
+This was a **stored cross-site scripting hole**, and the routing made it worse than usual: a resident types the address, but the person most likely to view it is an administrator, on the operations dashboard, holding the highest-privilege session in the system. The payload travelled from the lowest-trust input directly into the highest-trust browser.
+
+Every interpolated value now passes through `esc()`, which encodes `&`, `<`, `>`, `"` and `'`:
+
+```js
+function esc(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+```
+
+**The rule for anyone extending the frontend:** if a value came from the database or from a user, it is written `${esc(value)}`, with no exceptions. This applies inside attribute values as well as text content, which is why `esc()` encodes both quote characters. The only interpolations that may skip it are literals defined in `app.js` itself, such as the entries of `FLOW` and `STATUS_LABEL`.
+
+Note that this is a control applied by convention, in the same way the `Q` helper is for SQL, and it carries the same weakness: one forgotten call reopens the hole. A framework with contextual auto-escaping removes the class of bug entirely and should be preferred if the frontend is ever rewritten.
 
 ### 13.3 Environment variables and secrets management
 
@@ -1497,7 +1519,7 @@ There are two suites, both written in plain PowerShell because no test framework
 | Unit | `tests/unit.ps1` | Dot-sources `server.ps1 -LibraryOnly` and calls functions directly, no server or network | **42 assertions** |
 | End-to-end API | `tests/run.ps1` | Drives the running server over real HTTP against the real database | **126 assertions** |
 
-**Latest run: 168 executed, 168 passed, 0 failed.**
+**Latest run: 170 executed, 170 passed, 0 failed.**
 
 Run them with the server up:
 
@@ -1581,7 +1603,8 @@ Organised into labelled phases. The suite clears the `rate_limits` table between
 | L-07 | Salted SHA-256 masquerading as PBKDF2 in the envelope name | **High** | bcrypt or Argon2id with rehash on login |
 | L-08 | SQL built by string concatenation | **High** if exposed | Bound parameters throughout |
 | L-09 | Demo passwords reset on every startup by `Init-Db` | **High** in production | Remove before deployment |
-| L-10 | Login form pre-filled with admin credentials | Medium | Remove before deployment |
+| L-10 | Sign-in screen offers one-click demonstration logins (`DEMO_ACCOUNTS`) | Medium | Remove before deployment. Replaced the previous hard-coded admin credentials in the form fields |
+| L-10b | ~~Stored user text injected into `innerHTML` unescaped~~ | — | **Resolved:** every interpolated value passes through `esc()`. See 13.3 |
 | L-11 | 500 responses leak the exception message | Medium | Suppress and correlate |
 | L-12 | ~~Uploads have no ownership check~~ | — | **Resolved:** `Test-UploadRight` restricts evidence to the admin, the assigned collector, or the receiving recycler; covered by four tests |
 | L-12b | The delivery-report webhook is unauthenticated | Medium | Anyone who can reach the host can post a delivery status. Verify the provider signature or restrict by source IP before exposing the host |
@@ -1669,7 +1692,7 @@ Live Africa's Talking SMS and WhatsApp templates; live collector GPS tracking wi
 | **External integrations** | 5 | 5 | 100% |
 | **Scripts / modules** | 21 files | 21 | 100% |
 | **Audit action types** | 16 | 16 | 100% |
-| **Automated test assertions** | 168 (42 unit + 126 API) | 168 | 100% |
+| **Automated test assertions** | 170 (42 unit + 128 API) | 170 | 100% |
 | **Documented business rules** | 33 | 33 | 100% |
 | **FAQ entries** | 42 | 42 | 100% |
 
@@ -1705,7 +1728,7 @@ Every statement in these three documents was verified against the source rather 
 - All 13 tables, their columns, constraints, and 4 indexes were read from `api/schema.sql` and confirmed against the live database with `SELECT name FROM sqlite_master`.
 - The transition map in section 7 of Document 1 was transcribed from `$script:Allowed` and cross-checked against `ALLOWED` in `api/Domain.php`; the two are identical.
 - Every UI control described in Document 2 was traced to the render function that creates it and the endpoint it calls.
-- The test result (168 of 168) is from an actual execution, not an estimate.
+- The test result (170 of 170) is from an actual execution, not an estimate.
 - Health, homepage and all four role dashboards were confirmed live on port 8815.
 
 ### Documented gaps between design and running code

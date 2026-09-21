@@ -28,20 +28,44 @@ Write-Host "  $(Get-Date -Format 'dddd d MMMM yyyy, HH:mm')" -ForegroundColor Da
 $failures = 0
 
 # --- 1. Is the server answering? -------------------------------------------
+# The host does not survive a reboot, a sleep, or the console window that
+# launched it being closed, so finding it down on the morning of a demo is
+# normal rather than a fault. Start it instead of stopping the pre-flight.
 Head "1. Server"
-try {
-  $h = Invoke-WebRequest -UseBasicParsing "$($url)api/health" -TimeoutSec 5
+
+function Test-Health {
+  try { Invoke-WebRequest -UseBasicParsing "$($url)api/health" -TimeoutSec 5 | Out-Null; return $true }
+  catch { return $false }
+}
+
+if (Test-Health) {
   Good "Responding at $url"
-} catch {
-  Bad "Nothing is listening at $url"
-  Write-Host ""
-  Write-Host "  Start the server first:" -ForegroundColor Yellow
-  Write-Host "    right-click start.ps1  ->  Run with PowerShell" -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "  If it says it cannot bind the port, open .env, change APP_PORT" -ForegroundColor Yellow
-  Write-Host "  to the next number, save, and start it again." -ForegroundColor Yellow
-  Write-Host ""
-  exit 1
+}
+else {
+  Write-Host "  [ .. ]  Not running - starting it" -ForegroundColor Yellow
+  Start-Process -FilePath 'powershell' -WindowStyle Hidden -WorkingDirectory $root `
+    -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'server.ps1')
+
+  $up = $false
+  for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Seconds 1
+    if (Test-Health) { $up = $true; break }
+  }
+
+  if ($up) {
+    Good "Started and responding at $url"
+  }
+  else {
+    Bad "Could not bring the server up at $url"
+    Write-Host ""
+    Write-Host "  Start it by hand and watch for the error:" -ForegroundColor Yellow
+    Write-Host "    right-click start.ps1  ->  Run with PowerShell" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  If it says it cannot bind the port, open .env, change APP_PORT" -ForegroundColor Yellow
+    Write-Host "  to the next number, save, and start it again." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+  }
 }
 
 # --- 2. Prove it works ------------------------------------------------------
@@ -60,7 +84,12 @@ Head "4. Loading demonstration data"
 $d = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'demo-reset.ps1')
 if ($LASTEXITCODE -eq 0) {
   Good "Caseload rebuilt"
-  $d | Select-String '^\s{2}\w.*:' | ForEach-Object { Write-Host "        $($_.ToString().Trim())" -ForegroundColor Gray }
+  # Only the counter lines here; the cheat sheet is printed separately below.
+  $d | Select-String '^\s{2}[\w/ ]+:\s+\d+\s*$' | ForEach-Object { Write-Host "        $($_.ToString().Trim())" -ForegroundColor Gray }
+  $sheet = Join-Path $root 'demo-cheatsheet.txt'
+  if (Test-Path $sheet) {
+    Get-Content $sheet | ForEach-Object { Write-Host $_ -ForegroundColor Cyan }
+  }
 } else {
   Bad "Demo data reset failed"; $failures++
   $d | Select-Object -Last 8 | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkYellow }

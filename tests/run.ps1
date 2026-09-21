@@ -149,10 +149,21 @@ Check "GPS coordinates persisted" ([double]$create.json.request.latitude -eq -6.
 Check "navigation link generated from GPS" ([string]$create.json.request.google_nav -match 'google\.com/maps') "$($create.json.request.google_nav)"
 
 $users = Req GET /admin/users $null $at
-$cid = First-Int $users.json.collectors[0].collector_id
-$cid2 = First-Int $users.json.collectors[1].collector_id
+# Resolve collectors by the identity that owns them, never by array position.
+# `SELECT * FROM collectors` carries no ORDER BY, and an empty or reordered
+# result silently yielded id 0 — which then surfaced as a bogus "RBAC broken"
+# failure further down instead of an honest lookup failure here.
+function Collector-IdFor($loginResponse) {
+  $uid = First-Int $loginResponse.json.user.user_id
+  $match = @($users.json.collectors) | Where-Object { (First-Int $_.user_id) -eq $uid } | Select-Object -First 1
+  if (-not $match) { return 0 }
+  return First-Int $match.collector_id
+}
+$cid = Collector-IdFor $col
+$cid2 = Collector-IdFor $col2
 $reid = First-Int $users.json.recyclers[0].recycler_id
 Check "admin can list users, collectors and recyclers" ($users.code -eq 200 -and $cid -gt 0 -and $reid -gt 0) "c=$cid r=$reid"
+Check "both collector profiles resolve to distinct ids" ($cid -gt 0 -and $cid2 -gt 0 -and $cid -ne $cid2) "cid=$cid cid2=$cid2"
 
 $asg = Req POST /admin/assign @{ request_id = $rid; collector_id = $cid } $at
 Check "admin assigns collector" ($asg.code -eq 200 -and (Status-Of $asg) -eq "COLLECTOR_ASSIGNED") $asg.json.error
@@ -322,7 +333,9 @@ $citId = First-Int $cit.json.user.user_id
 Check "citizen list is scoped to their own requests" ((@($crossRole.json.items) | Where-Object { (First-Int $_.user_id) -ne $citId }).Count -eq 0) 'saw other users rows'
 Check "citizen list returns every own request" (@($crossRole.json.items).Count -ge 3) (@($crossRole.json.items).Count)
 $colList = Req GET /collector/tasks $null $col2t
-Check "collector list is scoped to their own assignments" ((@($colList.json.items) | Where-Object { [int]$_.collector_id -ne $cid2 }).Count -eq 0) 'saw other collector rows'
+$foreignRows = @($colList.json.items) | Where-Object { (First-Int $_.collector_id) -ne $cid2 }
+Check "collector list is scoped to their own assignments" ($cid2 -gt 0 -and $foreignRows.Count -eq 0) "cid2=$cid2 foreign=$($foreignRows.Count) saw=$(@($foreignRows | ForEach-Object { $_.collector_id }) -join ',')"
+Check "collector list is not empty" (@($colList.json.items).Count -gt 0) (@($colList.json.items).Count)
 
 Write-Host ""
 Write-Host "API tests: Passed=$passed Failed=$failed"
