@@ -42,6 +42,23 @@ $Sqlite = if ($sqliteCmd) { $sqliteCmd.Source } else { Join-Path $Root "tools\sq
 function Now-Iso { [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') }
 function Q([string]$s) { if ($null -eq $s) { '' } else { $s.Replace("'", "''") } }
 
+# SQLite JSON and JWT payloads can surface role as a string, a 1-item array, or
+# with odd spacing. Compare only the normalised value so a collector is never
+# refused as the wrong role because of a type quirk.
+function Get-UserRole($user) {
+  if ($null -eq $user) { return '' }
+  $raw = $null
+  if ($user -is [hashtable]) { $raw = $user['role'] }
+  else {
+    try { $raw = $user.role } catch { $raw = $null }
+  }
+  if ($raw -is [System.Array] -and $raw.Length) { $raw = $raw[0] }
+  return ([string]$raw).Trim().ToLowerInvariant()
+}
+function Test-UserRole($user, [string[]]$allowed) {
+  return $allowed -contains (Get-UserRole $user)
+}
+
 # RFC 4180: quote any cell containing a comma, quote, or newline.
 function Csv-Cell($v) {
   $s = if ($null -eq $v) { '' } else { [string]$v }
@@ -663,24 +680,39 @@ while ($listener.IsListening) {
     }
 
     if ($method -eq 'POST' -and $api -eq '/collector/accept') {
-      if (-not $user -or $user.role -ne 'collector') { Send-Json $res $(if($user){403}else{401}) @{ error = 'Insufficient role permission' }; continue }
+      if (-not $user) { Send-Json $res 401 @{ error = 'Authentication required' }; continue }
+      if (-not (Test-UserRole $user @('collector','admin'))) { Send-Json $res 403 @{ error = 'Insufficient role permission' }; continue }
       $rid = [int]$body.request_id
-      $col = @(Invoke-Select "SELECT * FROM collectors WHERE user_id=$($user.user_id);")
-      if (-not $col.Count) { Send-Json $res 403 @{ error = 'Collector profile missing' }; continue }
-      $asg = @(Invoke-Select "SELECT * FROM assignments WHERE request_id=$rid AND collector_id=$($col[0].collector_id);")
-      if (-not $asg.Count) { Send-Json $res 403 @{ error = 'Not assigned to this collector' }; continue }
+      if (-not $rid) { Send-Json $res 422 @{ error = 'request_id required' }; continue }
+      if ((Get-UserRole $user) -eq 'collector') {
+        $col = @(Invoke-Select "SELECT * FROM collectors WHERE user_id=$($user.user_id);")
+        if (-not $col.Count) { Send-Json $res 403 @{ error = 'Collector profile missing' }; continue }
+        $asg = @(Invoke-Select "SELECT * FROM assignments WHERE request_id=$rid AND collector_id=$($col[0].collector_id);")
+        if (-not $asg.Count) { Send-Json $res 403 @{ error = 'Not assigned to this collector' }; continue }
+      } else {
+        $asg = @(Invoke-Select "SELECT * FROM assignments WHERE request_id=$rid;")
+        if (-not $asg.Count) { Send-Json $res 403 @{ error = 'Request is not assigned' }; continue }
+      }
       Invoke-Exec "UPDATE assignments SET accepted_at='$(Now-Iso)' WHERE request_id=$rid;"
       $r = Set-Status $rid 'PICKUP_ACCEPTED' $user 'Collector accepted assignment' $false
-      Send-Json $res $r.code @{ request = $r.request }; continue
+      Send-Json $res $r.code $(if ($r.error) { $r } else { @{ request = $r.request } }); continue
     }
 
     if ($method -eq 'POST' -and $api -eq '/collector/handover') {
-      if (-not $user -or $user.role -ne 'collector') { Send-Json $res $(if($user){403}else{401}) @{ error = 'Insufficient role permission' }; continue }
+      if (-not $user) { Send-Json $res 401 @{ error = 'Authentication required' }; continue }
+      if (-not (Test-UserRole $user @('collector','admin'))) { Send-Json $res 403 @{ error = 'Insufficient role permission' }; continue }
       $rid = [int]$body.request_id; $reid = [int]$body.recycler_id
       if (-not $rid -or -not $reid) { Send-Json $res 422 @{ error = 'request_id and recycler_id required' }; continue }
-      $col = @(Invoke-Select "SELECT * FROM collectors WHERE user_id=$($user.user_id);")[0]
       $current = Pickup-Row $rid
-      if (-not $current -or [int]$current.collector_id -ne [int]$col.collector_id) { Send-Json $res 403 @{ error = 'Collector does not hold this request' }; continue }
+      if ((Get-UserRole $user) -eq 'collector') {
+        $mine = @(Invoke-Select "SELECT * FROM collectors WHERE user_id=$($user.user_id);")
+        $col = if ($mine.Count) { $mine[0] } else { $null }
+        if (-not $current -or -not $col -or [int]$current.collector_id -ne [int]$col.collector_id) { Send-Json $res 403 @{ error = 'Collector does not hold this request' }; continue }
+      } else {
+        if (-not $current -or -not $current.collector_id) { Send-Json $res 403 @{ error = 'Request is not assigned' }; continue }
+        $col = @(Invoke-Select "SELECT * FROM collectors WHERE collector_id=$([int]$current.collector_id);")[0]
+        if (-not $col) { Send-Json $res 403 @{ error = 'Collector profile missing' }; continue }
+      }
       if ($current.status -eq 'IN_COLLECTOR_CUSTODY') { Set-Status $rid 'TRANSFER_SCHEDULED' $user 'Handover scheduled' $false | Out-Null }
       Invoke-Exec "INSERT INTO custody_transfers(request_id,collector_id,recycler_id,status,transfer_date,notes) VALUES ($rid,$($col.collector_id),$reid,'IN_TRANSIT_TO_RECYCLER','$(Now-Iso)','$(Q $body.notes)');"
       $row = Pickup-Row $rid

@@ -169,6 +169,11 @@ $asg = Req POST /admin/assign @{ request_id = $rid; collector_id = $cid } $at
 Check "admin assigns collector" ($asg.code -eq 200 -and (Status-Of $asg) -eq "COLLECTOR_ASSIGNED") $asg.json.error
 $wrongCol = Req POST /collector/accept @{ request_id = $rid } $col2t
 Check "unassigned collector cannot accept the job" ($wrongCol.code -eq 403) $wrongCol.code
+$adminJob = Req POST /pickup/create @{ location = "Admin accept stand"; area = "Ilala"; battery_type = "Lead-acid"; quantity = 1 } $ct
+$adminRid = First-Int $adminJob.json.request.request_id
+Req POST /admin/assign @{ request_id = $adminRid; collector_id = $cid } $at | Out-Null
+$adminAcc = Req POST /collector/accept @{ request_id = $adminRid } $at
+Check "admin can accept on behalf of assigned collector" ($adminAcc.code -eq 200 -and (Status-Of $adminAcc) -eq "PICKUP_ACCEPTED") $adminAcc.json.error
 $acc = Req POST /collector/accept @{ request_id = $rid } $colt
 Check "assigned collector accepts" ($acc.code -eq 200 -and (Status-Of $acc) -eq "PICKUP_ACCEPTED") $acc.json.error
 $illegal = Req PUT /pickup/status @{ request_id = $rid; status = "PROCESS_COMPLETED" } $colt

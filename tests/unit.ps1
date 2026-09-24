@@ -32,6 +32,14 @@ $flipped = if ($lastChar -eq 'f') { '0' } else { 'f' }
 $tampered = $h.Substring(0, $h.Length - 1) + $flipped
 Check "tampered digest rejected" (($tampered -ne $h) -and -not (Test-Password $tampered 'VoltRescue!23')) "tampered=$tampered"
 
+Write-Host "--- unit: role normalisation"
+Check "Get-UserRole reads collector" ((Get-UserRole ([pscustomobject]@{ role = 'collector' })) -eq 'collector') (Get-UserRole ([pscustomobject]@{ role = 'collector' }))
+Check "Get-UserRole trims and lowercases" ((Get-UserRole ([pscustomobject]@{ role = ' Collector ' })) -eq 'collector') (Get-UserRole ([pscustomobject]@{ role = ' Collector ' }))
+Check "Get-UserRole unwraps a one-item array" ((Get-UserRole ([pscustomobject]@{ role = @('collector') })) -eq 'collector') (Get-UserRole ([pscustomobject]@{ role = @('collector') }))
+Check "Test-UserRole allows collector or admin" (Test-UserRole ([pscustomobject]@{ role = 'admin' }) @('collector','admin')) 'admin should be allowed'
+Check "Test-UserRole refuses recycler" (-not (Test-UserRole ([pscustomobject]@{ role = 'recycler' }) @('collector','admin'))) 'recycler should be refused'
+Check "Get-UserRole empty for null user" ((Get-UserRole $null) -eq '') 'expected empty'
+
 Write-Host "--- unit: JWT issue and verify"
 $u = [pscustomobject]@{ user_id = 42; role = 'admin'; name = 'Menelick Admin' }
 $tok = Issue-Jwt $u

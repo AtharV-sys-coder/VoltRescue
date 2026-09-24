@@ -294,7 +294,7 @@ function renderAuth(mode = "login") {
         token = data.token;
         me = data.user;
         sessionStorage.setItem("vr_token", token);
-        view = "request";
+        view = me.role === "admin" ? "admin" : me.role === "collector" ? "collector" : me.role === "recycler" ? "recycler" : "request";
         route();
       } else {
         await api("/auth/password-reset", { method: "POST", body: JSON.stringify({ phone: fd.phone }) });

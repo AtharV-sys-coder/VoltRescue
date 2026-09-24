@@ -254,16 +254,30 @@ try {
     }
 
     if ($method === 'POST' && $uri === '/collector/accept') {
-        $u = require_user(['collector']);
+        $u = require_user(['collector', 'admin']);
         $b = json_input();
         $rid = (int) ($b['request_id'] ?? 0);
-        $col = db()->prepare('SELECT * FROM collectors WHERE user_id=?');
-        $col->execute([$u['user_id']]);
-        $collector = $col->fetch();
-        $as = db()->prepare('SELECT * FROM assignments WHERE request_id=? AND collector_id=?');
-        $as->execute([$rid, $collector['collector_id']]);
-        if (!$as->fetch()) {
-            respond(403, ['error' => 'Not assigned to this collector']);
+        if (!$rid) {
+            respond(422, ['error' => 'request_id required']);
+        }
+        if ($u['role'] === 'collector') {
+            $col = db()->prepare('SELECT * FROM collectors WHERE user_id=?');
+            $col->execute([$u['user_id']]);
+            $collector = $col->fetch();
+            if (!$collector) {
+                respond(403, ['error' => 'Collector profile missing']);
+            }
+            $as = db()->prepare('SELECT * FROM assignments WHERE request_id=? AND collector_id=?');
+            $as->execute([$rid, $collector['collector_id']]);
+            if (!$as->fetch()) {
+                respond(403, ['error' => 'Not assigned to this collector']);
+            }
+        } else {
+            $as = db()->prepare('SELECT * FROM assignments WHERE request_id=?');
+            $as->execute([$rid]);
+            if (!$as->fetch()) {
+                respond(403, ['error' => 'Request is not assigned']);
+            }
         }
         db()->prepare('UPDATE assignments SET accepted_at=? WHERE request_id=?')->execute([now_iso(), $rid]);
         $row = set_status($rid, 'PICKUP_ACCEPTED', $u, 'Collector accepted assignment');
@@ -271,19 +285,31 @@ try {
     }
 
     if ($method === 'POST' && $uri === '/collector/handover') {
-        $u = require_user(['collector']);
+        $u = require_user(['collector', 'admin']);
         $b = json_input();
         $rid = (int) ($b['request_id'] ?? 0);
         $recyclerId = (int) ($b['recycler_id'] ?? 0);
         if (!$rid || !$recyclerId) {
             respond(422, ['error' => 'request_id and recycler_id required']);
         }
-        $col = db()->prepare('SELECT * FROM collectors WHERE user_id=?');
-        $col->execute([$u['user_id']]);
-        $collector = $col->fetch();
         $current = pickup_row($rid);
-        if (!$current || (int) $current['collector_id'] !== (int) $collector['collector_id']) {
-            respond(403, ['error' => 'Collector does not hold this request']);
+        if ($u['role'] === 'collector') {
+            $col = db()->prepare('SELECT * FROM collectors WHERE user_id=?');
+            $col->execute([$u['user_id']]);
+            $collector = $col->fetch();
+            if (!$current || !$collector || (int) $current['collector_id'] !== (int) $collector['collector_id']) {
+                respond(403, ['error' => 'Collector does not hold this request']);
+            }
+        } else {
+            if (!$current || empty($current['collector_id'])) {
+                respond(403, ['error' => 'Request is not assigned']);
+            }
+            $col = db()->prepare('SELECT * FROM collectors WHERE collector_id=?');
+            $col->execute([(int) $current['collector_id']]);
+            $collector = $col->fetch();
+            if (!$collector) {
+                respond(403, ['error' => 'Collector profile missing']);
+            }
         }
         if ($current['status'] === 'IN_COLLECTOR_CUSTODY') {
             set_status($rid, 'TRANSFER_SCHEDULED', $u, 'Handover scheduled');
